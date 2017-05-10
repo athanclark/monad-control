@@ -2,6 +2,7 @@
            , NoImplicitPrelude
            , RankNTypes
            , TypeFamilies
+           , TupleSections
            , FunctionalDependencies
            , FlexibleInstances
            , UndecidableInstances
@@ -38,7 +39,7 @@ module Control.Monad.Trans.Control
 
       -- ** Defaults
       -- $MonadBaseControlDefaults
-    , ComposeSt, RunInBaseDefault, defaultLiftBaseWith, defaultRestoreM
+    , RunInBaseDefault, defaultLiftBaseWith, defaultRestoreM
 
       -- * Utility functions
     , control, embed, embed_, captureT, captureM
@@ -62,6 +63,9 @@ import Control.Monad ( Monad, (>>=), return, liftM )
 import System.IO     ( IO )
 import Data.Maybe    ( Maybe )
 import Data.Either   ( Either )
+import Data.Functor.Identity ( Identity (..) )
+import Data.Functor.Compose  ( Compose (..) )
+import Data.Tuple    ( swap )
 
 #if MIN_VERSION_base(4,4,0)
 import           Control.Monad.ST.Lazy.Safe           ( ST )
@@ -101,16 +105,13 @@ void :: Functor f => f a -> f ()
 void = fmap (const ())
 #endif
 
-import Prelude (id)
+import Prelude (id, (<$>), pure)
 
 --------------------------------------------------------------------------------
 -- MonadTransControl type class
 --------------------------------------------------------------------------------
 
-class MonadTrans t => MonadTransControl t where
-  -- | Monadic state of @t@.
-  type StT t a :: *
-
+class MonadTrans t => MonadTransControl t stT | t -> stT where
   -- | @liftWith@ is similar to 'lift' in that it lifts a computation from
   -- the argument monad to the constructed monad.
   --
@@ -124,7 +125,7 @@ class MonadTrans t => MonadTransControl t where
   -- @liftWith@ captures the state of @t@. It then provides the @m@
   -- computation with a 'Run' function that allows running @t n@ computations in
   -- @n@ (for all @n@) on the captured state.
-  liftWith :: Monad m => (Run t -> m a) -> t m a
+  liftWith :: Monad m => (Run t stT -> m a) -> t m a
 
   -- | Construct a @t@ computation from the monadic state of @t@ that is
   -- returned from a 'Run' function.
@@ -132,7 +133,7 @@ class MonadTrans t => MonadTransControl t where
   -- Instances should satisfy:
   --
   -- @liftWith (\\run -> run t) >>= restoreT . return = t@
-  restoreT :: Monad m => m (StT t a) -> t m a
+  restoreT :: Monad m => m (stT a) -> t m a
 
 -- | A function that runs a transformed monad @t n@ on the monadic state that
 -- was captured by 'liftWith'
@@ -140,7 +141,7 @@ class MonadTrans t => MonadTransControl t where
 -- A @Run t@ function yields a computation in @n@ that returns the monadic state
 -- of @t@. This state can later be used to restore a @t@ computation using
 -- 'restoreT'.
-type Run t = forall n b. Monad n => t n b -> n (StT t b)
+type Run t stT = forall n b. Monad n => t n b -> n (stT b)
 
 
 --------------------------------------------------------------------------------
@@ -167,21 +168,21 @@ type Run t = forall n b. Monad n => t n b -> n (StT t b)
 
 -- | A function like 'Run' that runs a monad transformer @t@ which wraps the
 -- monad transformer @t'@. This is used in 'defaultLiftWith'.
-type RunDefault t t' = forall n b. Monad n => t n b -> n (StT t' b)
+type RunDefault t stT = forall n b. Monad n => t n b -> n (stT b)
 
 -- | Default definition for the 'liftWith' method.
-defaultLiftWith :: (Monad m, MonadTransControl n)
+defaultLiftWith :: (Monad m, MonadTransControl n stT)
                 => (forall b.   n m b -> t m b)     -- ^ Monad constructor
                 -> (forall o b. t o b -> n o b)     -- ^ Monad deconstructor
-                -> (RunDefault t n -> m a)
+                -> (RunDefault t stT -> m a)
                 -> t m a
 defaultLiftWith t unT = \f -> t $ liftWith $ \run -> f $ run . unT
 {-# INLINABLE defaultLiftWith #-}
 
 -- | Default definition for the 'restoreT' method.
-defaultRestoreT :: (Monad m, MonadTransControl n)
+defaultRestoreT :: (Monad m, MonadTransControl n stT)
                 => (n m a -> t m a)     -- ^ Monad constructor
-                -> m (StT n a)
+                -> m (stT a)
                 -> t m a
 defaultRestoreT t = t . restoreT
 {-# INLINABLE defaultRestoreT #-}
@@ -191,96 +192,75 @@ defaultRestoreT t = t . restoreT
 -- MonadTransControl instances
 --------------------------------------------------------------------------------
 
-instance MonadTransControl IdentityT where
-    type StT IdentityT a = a
-    liftWith f = IdentityT $ f $ runIdentityT
-    restoreT = IdentityT
+instance MonadTransControl IdentityT Identity where
+    liftWith f = IdentityT $ f $ \mx -> Identity <$> runIdentityT mx
+    restoreT mx = IdentityT $ runIdentity <$> mx
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance MonadTransControl MaybeT where
-    type StT MaybeT a = Maybe a
+instance MonadTransControl MaybeT Maybe where
     liftWith f = MaybeT $ liftM return $ f $ runMaybeT
     restoreT = MaybeT
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance Error e => MonadTransControl (ErrorT e) where
-    type StT (ErrorT e) a = Either e a
+instance Error e => MonadTransControl (ErrorT e) (Either e) where
     liftWith f = ErrorT $ liftM return $ f $ runErrorT
     restoreT = ErrorT
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance MonadTransControl (ExceptT e) where
-    type StT (ExceptT e) a = Either e a
+instance MonadTransControl (ExceptT e) (Either e) where
     liftWith f = ExceptT $ liftM return $ f $ runExceptT
     restoreT = ExceptT
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance MonadTransControl ListT where
-    type StT ListT a = [a]
+instance MonadTransControl ListT [] where
     liftWith f = ListT $ liftM return $ f $ runListT
     restoreT = ListT
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance MonadTransControl (ReaderT r) where
-    type StT (ReaderT r) a = a
-    liftWith f = ReaderT $ \r -> f $ \t -> runReaderT t r
-    restoreT = ReaderT . const
+instance MonadTransControl (ReaderT r) Identity where
+    liftWith f = ReaderT $ \r -> f $ \t -> Identity <$> runReaderT t r
+    restoreT mx = ReaderT $ \_ -> runIdentity <$> mx
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance MonadTransControl (StateT s) where
-    type StT (StateT s) a = (a, s)
-    liftWith f = StateT $ \s ->
-                   liftM (\x -> (x, s))
-                         (f $ \t -> runStateT t s)
-    restoreT = StateT . const
+instance MonadTransControl (StateT s) ((,) s) where
+    liftWith f = StateT $ \s -> (,s) <$> f (\t -> swap <$> runStateT t s)
+    restoreT mx = StateT $ \_ -> swap <$> mx
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance MonadTransControl (Strict.StateT s) where
-    type StT (Strict.StateT s) a = (a, s)
-    liftWith f = Strict.StateT $ \s ->
-                   liftM (\x -> (x, s))
-                         (f $ \t -> Strict.runStateT t s)
-    restoreT = Strict.StateT . const
+instance MonadTransControl (Strict.StateT s) ((,) s) where
+    liftWith f = Strict.StateT $ \s -> (,s) <$> f (\t -> swap <$> Strict.runStateT t s)
+    restoreT mx = Strict.StateT $ \_ -> swap <$> mx
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance Monoid w => MonadTransControl (WriterT w) where
-    type StT (WriterT w) a = (a, w)
-    liftWith f = WriterT $ liftM (\x -> (x, mempty))
-                                 (f $ runWriterT)
-    restoreT = WriterT
+instance Monoid w => MonadTransControl (WriterT w) ((,) w) where
+    liftWith f = WriterT $ (,mempty) <$> (f $ \t -> swap <$> runWriterT t)
+    restoreT mx = WriterT $ swap <$> mx
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance Monoid w => MonadTransControl (Strict.WriterT w) where
-    type StT (Strict.WriterT w) a = (a, w)
-    liftWith f = Strict.WriterT $ liftM (\x -> (x, mempty))
-                                        (f $ Strict.runWriterT)
-    restoreT = Strict.WriterT
+instance Monoid w => MonadTransControl (Strict.WriterT w) ((,) w) where
+    liftWith f = Strict.WriterT $ (,mempty) <$> (f $ \t -> swap <$> Strict.runWriterT t)
+    restoreT mx = Strict.WriterT $ swap <$> mx
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance Monoid w => MonadTransControl (RWST r w s) where
-    type StT (RWST r w s) a = (a, s, w)
-    liftWith f = RWST $ \r s -> liftM (\x -> (x, s, mempty))
-                                      (f $ \t -> runRWST t r s)
-    restoreT mSt = RWST $ \_ _ -> mSt
+instance Monoid w => MonadTransControl (RWST r w s) ((,,) w s) where
+    liftWith f = RWST $ \r s -> (,s,mempty) <$> (f $ \t -> (\(a,s,w) -> (w,s,a)) <$> runRWST t r s)
+    restoreT mSt = RWST $ \_ _ -> (\(w,s,a) -> (a,s,w)) <$> mSt
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
-instance Monoid w => MonadTransControl (Strict.RWST r w s) where
-    type StT (Strict.RWST r w s) a = (a, s, w)
-    liftWith f =
-        Strict.RWST $ \r s -> liftM (\x -> (x, s, mempty))
-                                    (f $ \t -> Strict.runRWST t r s)
-    restoreT mSt = Strict.RWST $ \_ _ -> mSt
+instance Monoid w => MonadTransControl (Strict.RWST r w s) ((,,) w s) where
+    liftWith f = Strict.RWST $ \r s -> (,s,mempty) <$> (f $ \t -> (\(a,s,w) -> (w,s,a)) <$> Strict.runRWST t r s)
+    restoreT mSt = Strict.RWST $ \_ _ -> (\(w,s,a) -> (a,s,w)) <$> mSt
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
@@ -289,9 +269,7 @@ instance Monoid w => MonadTransControl (Strict.RWST r w s) where
 -- MonadBaseControl type class
 --------------------------------------------------------------------------------
 
-class MonadBase b m => MonadBaseControl b m | m -> b where
-    -- | Monadic state of @m@.
-    type StM m a :: *
+class MonadBase b m => MonadBaseControl b m stM | m -> b stM where
 
     -- | @liftBaseWith@ is similar to 'liftIO' and 'liftBase' in that it
     -- lifts a base computation to the constructed monad.
@@ -306,7 +284,7 @@ class MonadBase b m => MonadBaseControl b m | m -> b where
     -- @liftBaseWith@ captures the state of @m@. It then provides the base
     -- computation with a 'RunInBase' function that allows running @m@
     -- computations in the base monad on the captured state.
-    liftBaseWith :: (RunInBase m b -> b a) -> m a
+    liftBaseWith :: (RunInBase m b stM -> b a) -> m a
 
     -- | Construct a @m@ computation from the monadic state of @m@ that is
     -- returned from a 'RunInBase' function.
@@ -314,7 +292,7 @@ class MonadBase b m => MonadBaseControl b m | m -> b where
     -- Instances should satisfy:
     --
     -- @liftBaseWith (\\runInBase -> runInBase m) >>= restoreM = m@
-    restoreM :: StM m a -> m a
+    restoreM :: stM a -> m a
 
 -- | A function that runs a @m@ computation on the monadic state that was
 -- captured by 'liftBaseWith'
@@ -322,33 +300,67 @@ class MonadBase b m => MonadBaseControl b m | m -> b where
 -- A @RunInBase m@ function yields a computation in the base monad of @m@ that
 -- returns the monadic state of @m@. This state can later be used to restore the
 -- @m@ computation using 'restoreM'.
-type RunInBase m b = forall a. m a -> b (StM m a)
+type RunInBase m b stM = forall a. m a -> b (stM a)
 
 
 --------------------------------------------------------------------------------
 -- MonadBaseControl instances for all monads in the base library
 --------------------------------------------------------------------------------
 
-#define BASE(M)                           \
-instance MonadBaseControl (M) (M) where { \
-    type StM (M) a = a;                   \
-    liftBaseWith f = f id;                \
-    restoreM = return;                    \
-    {-# INLINABLE liftBaseWith #-};       \
-    {-# INLINABLE restoreM #-}}
+instance MonadBaseControl IO IO Identity where
+  liftBaseWith f = f (\x -> Identity <$> x)
+  restoreM x = pure (runIdentity x)
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
 
-BASE(IO)
-BASE(Maybe)
-BASE(Either e)
-BASE([])
-BASE((->) r)
-BASE(Identity)
+instance MonadBaseControl Maybe Maybe Identity where
+  liftBaseWith f = f (\x -> Identity <$> x)
+  restoreM x = pure (runIdentity x)
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
 
-BASE(STM)
+instance MonadBaseControl (Either e) (Either e) Identity where
+  liftBaseWith f = f (\x -> Identity <$> x)
+  restoreM x = pure (runIdentity x)
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance MonadBaseControl [] [] Identity where
+  liftBaseWith f = f (\x -> Identity <$> x)
+  restoreM x = pure (runIdentity x)
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance MonadBaseControl ((->) r) ((->) r) Identity where
+  liftBaseWith f = f (\x -> Identity <$> x)
+  restoreM x = pure (runIdentity x)
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance MonadBaseControl Identity Identity Identity where
+  liftBaseWith f = f (\x -> Identity <$> x)
+  restoreM x = pure (runIdentity x)
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance MonadBaseControl STM STM Identity where
+  liftBaseWith f = f (\x -> Identity <$> x)
+  restoreM x = pure (runIdentity x)
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
 
 #if MIN_VERSION_base(4,4,0)
-BASE(Strict.ST s)
-BASE(       ST s)
+instance MonadBaseControl (Strict.ST s) (Strict.ST s) Identity where
+  liftBaseWith f = f (\x -> Identity <$> x)
+  restoreM x = pure (runIdentity x)
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance MonadBaseControl (ST s) (ST s) Identity where
+  liftBaseWith f = f (\x -> Identity <$> x)
+  restoreM x = pure (runIdentity x)
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
 #endif
 
 #undef BASE
@@ -379,14 +391,9 @@ BASE(       ST s)
 --     restoreM       = 'return'
 -- @
 
--- | Handy type synonym that composes the monadic states of @t@ and @m@.
---
--- It can be used to define the 'StM' for new 'MonadBaseControl' instances.
-type ComposeSt t m a = StM m (StT t a)
-
 -- | A function like 'RunInBase' that runs a monad transformer @t@ in its base
 -- monad @b@. It is used in 'defaultLiftBaseWith'.
-type RunInBaseDefault t m b = forall a. t m a -> b (ComposeSt t m a)
+type RunInBaseDefault (t :: (* -> *) -> * -> *) (m :: * -> *) (b :: * -> *) (stM :: * -> *) (stT :: * -> *) = forall a. t m a -> b (Compose stM stT a)
 
 -- | Default defintion for the 'liftBaseWith' method.
 --
@@ -398,19 +405,19 @@ type RunInBaseDefault t m b = forall a. t m a -> b (ComposeSt t m a)
 --                               'liftBaseWith' $ \\runInBase ->
 --                                 f $ runInBase . run
 -- @
-defaultLiftBaseWith :: (MonadTransControl t, MonadBaseControl b m)
-                    => (RunInBaseDefault t m b -> b a) -> t m a
-defaultLiftBaseWith = \f -> liftWith $ \run ->
-                              liftBaseWith $ \runInBase ->
-                                f $ runInBase . run
+defaultLiftBaseWith :: (MonadTransControl t stT, MonadBaseControl b m stM)
+                    => (RunInBaseDefault t m b stM stT -> b a) -> t m a
+defaultLiftBaseWith f = liftWith $ \run ->
+                          liftBaseWith $ \runInBase ->
+                            f (\t -> Compose <$> runInBase (run t))
 {-# INLINABLE defaultLiftBaseWith #-}
 
 -- | Default definition for the 'restoreM' method.
 --
 -- Note that: @defaultRestoreM = 'restoreT' . 'restoreM'@
-defaultRestoreM :: (MonadTransControl t, MonadBaseControl b m)
-                => ComposeSt t m a -> t m a
-defaultRestoreM = restoreT . restoreM
+defaultRestoreM :: (MonadTransControl t stT, MonadBaseControl b m stM)
+                => Compose stM stT a -> t m a
+defaultRestoreM (Compose x) = restoreT (restoreM x)
 {-# INLINABLE defaultRestoreM #-}
 
 
@@ -418,31 +425,79 @@ defaultRestoreM = restoreT . restoreM
 -- MonadBaseControl transformer instances
 --------------------------------------------------------------------------------
 
-#define BODY(T) {                         \
-    type StM (T m) a = ComposeSt (T) m a; \
-    liftBaseWith = defaultLiftBaseWith;   \
-    restoreM     = defaultRestoreM;       \
-    {-# INLINABLE liftBaseWith #-};       \
-    {-# INLINABLE restoreM #-}}
+instance (MonadBaseControl b m stM) => MonadBaseControl b (IdentityT m) (Compose stM Identity) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
 
-#define TRANS(         T) \
-  instance (     MonadBaseControl b m) => MonadBaseControl b (T m) where BODY(T)
-#define TRANS_CTX(CTX, T) \
-  instance (CTX, MonadBaseControl b m) => MonadBaseControl b (T m) where BODY(T)
+instance (MonadBaseControl b m stM) => MonadBaseControl b (MaybeT m) (Compose stM Maybe) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
 
-TRANS(IdentityT)
-TRANS(MaybeT)
-TRANS(ListT)
-TRANS(ReaderT r)
-TRANS(Strict.StateT s)
-TRANS(       StateT s)
-TRANS(ExceptT e)
+instance (MonadBaseControl b m stM) => MonadBaseControl b (ListT m) (Compose stM []) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
 
-TRANS_CTX(Error e,         ErrorT e)
-TRANS_CTX(Monoid w, Strict.WriterT w)
-TRANS_CTX(Monoid w,        WriterT w)
-TRANS_CTX(Monoid w, Strict.RWST r w s)
-TRANS_CTX(Monoid w,        RWST r w s)
+instance (MonadBaseControl b m stM) => MonadBaseControl b (ReaderT r m) (Compose stM Identity) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance (MonadBaseControl b m stM) => MonadBaseControl b (Strict.StateT s m) (Compose stM ((,) s)) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance (MonadBaseControl b m stM) => MonadBaseControl b (StateT s m) (Compose stM ((,) s)) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance (MonadBaseControl b m stM) => MonadBaseControl b (ExceptT e m) (Compose stM (Either e)) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+
+
+instance (MonadBaseControl b m stM, Error e) => MonadBaseControl b (ErrorT e m) (Compose stM (Either e)) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance (MonadBaseControl b m stM, Monoid w) => MonadBaseControl b (Strict.WriterT w m) (Compose stM ((,) w)) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance (MonadBaseControl b m stM, Monoid w) => MonadBaseControl b (WriterT w m) (Compose stM ((,) w)) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance (MonadBaseControl b m stM, Monoid w) => MonadBaseControl b (Strict.RWST r w s m) (Compose stM ((,,) w s)) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
+
+instance (MonadBaseControl b m stM, Monoid w) => MonadBaseControl b (RWST r w s m) (Compose stM ((,,) w s)) where
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+  {-# INLINABLE liftBaseWith #-}
+  {-# INLINABLE restoreM #-}
 
 
 --------------------------------------------------------------------------------
@@ -450,29 +505,29 @@ TRANS_CTX(Monoid w,        RWST r w s)
 --------------------------------------------------------------------------------
 
 -- | An often used composition: @control f = 'liftBaseWith' f >>= 'restoreM'@
-control :: MonadBaseControl b m => (RunInBase m b -> b (StM m a)) -> m a
+control :: MonadBaseControl b m stM => (RunInBase m b stM -> b (stM a)) -> m a
 control f = liftBaseWith f >>= restoreM
 {-# INLINABLE control #-}
 
 -- | Embed a transformer function as an function in the base monad returning a
 -- mutated transformer state.
-embed :: MonadBaseControl b m => (a -> m c) -> m (a -> b (StM m c))
+embed :: MonadBaseControl b m stM => (a -> m c) -> m (a -> b (stM c))
 embed f = liftBaseWith $ \runInBase -> return (runInBase . f)
 {-# INLINABLE embed #-}
 
 -- | Performs the same function as 'embed', but discards transformer state
 -- from the embedded function.
-embed_ :: MonadBaseControl b m => (a -> m ()) -> m (a -> b ())
+embed_ :: MonadBaseControl b m stM => (a -> m ()) -> m (a -> b ())
 embed_ f = liftBaseWith $ \runInBase -> return (void . runInBase . f)
 {-# INLINABLE embed_ #-}
 
 -- | Capture the current state of a transformer
-captureT :: (MonadTransControl t, Monad (t m), Monad m) => t m (StT t ())
+captureT :: (MonadTransControl t stT, Monad (t m), Monad m) => t m (stT ())
 captureT = liftWith $ \runInM -> runInM (return ())
 {-# INLINABLE captureT #-}
 
 -- | Capture the current state above the base monad
-captureM :: MonadBaseControl b m => m (StM m ())
+captureM :: MonadBaseControl b m stM => m (stM ())
 captureM = liftBaseWith $ \runInBase -> runInBase (return ())
 {-# INLINABLE captureM #-}
 
@@ -484,9 +539,9 @@ captureM = liftBaseWith $ \runInBase -> runInBase (return ())
 -- For example:
 --
 -- @liftBaseOp alloca :: 'MonadBaseControl' 'IO' m => (Ptr a -> m c) -> m c@
-liftBaseOp :: MonadBaseControl b m
-           => ((a -> b (StM m c)) -> b (StM m d))
-           -> ((a ->        m c)  ->        m d)
+liftBaseOp :: MonadBaseControl b m stM
+           => ((a -> b (stM c)) -> b (stM d))
+           -> ((a ->      m c)  ->      m d)
 liftBaseOp f = \g -> control $ \runInBase -> f $ runInBase . g
 {-# INLINABLE liftBaseOp #-}
 
@@ -498,9 +553,9 @@ liftBaseOp f = \g -> control $ \runInBase -> f $ runInBase . g
 -- For example:
 --
 -- @liftBaseOp_ mask_ :: 'MonadBaseControl' 'IO' m => m a -> m a@
-liftBaseOp_ :: MonadBaseControl b m
-            => (b (StM m a) -> b (StM m c))
-            -> (       m a  ->        m c)
+liftBaseOp_ :: MonadBaseControl b m stM
+            => (b (stM a) -> b (stM c))
+            -> (     m a  ->      m c)
 liftBaseOp_ f = \m -> control $ \runInBase -> f $ runInBase m
 {-# INLINABLE liftBaseOp_ #-}
 
@@ -516,7 +571,7 @@ liftBaseOp_ f = \m -> control $ \runInBase -> f $ runInBase m
 -- For example:
 --
 -- @liftBaseDiscard forkIO :: 'MonadBaseControl' 'IO' m => m () -> m ThreadId@
-liftBaseDiscard :: MonadBaseControl b m => (b () -> b a) -> (m () -> m a)
+liftBaseDiscard :: MonadBaseControl b m stM => (b () -> b a) -> (m () -> m a)
 liftBaseDiscard f = \m -> liftBaseWith $ \runInBase -> f $ void $ runInBase m
 {-# INLINABLE liftBaseDiscard #-}
 
@@ -532,7 +587,7 @@ liftBaseDiscard f = \m -> liftBaseWith $ \runInBase -> f $ void $ runInBase m
 -- For example:
 --
 -- @liftBaseDiscard (runServer addr port) :: 'MonadBaseControl' 'IO' m => m () -> m ()@
-liftBaseOpDiscard :: MonadBaseControl b m
+liftBaseOpDiscard :: MonadBaseControl b m stM
                   => ((a -> b ()) -> b c)
                   ->  (a -> m ()) -> m c
 liftBaseOpDiscard f g = liftBaseWith $ \runInBase -> f $ void . runInBase . g
@@ -540,8 +595,8 @@ liftBaseOpDiscard f g = liftBaseWith $ \runInBase -> f $ void . runInBase . g
 
 -- | Transform an action in @t m@ using a transformer that operates on the underlying monad @m@
 liftThrough
-    :: (MonadTransControl t, Monad (t m), Monad m)
-    => (m (StT t a) -> m (StT t b)) -- ^
+    :: (MonadTransControl t stT, Monad (t m), Monad m)
+    => (m (stT a) -> m (stT b)) -- ^
     -> t m a -> t m b
 liftThrough f t = do
   st <- liftWith $ \run -> do
