@@ -1,5 +1,5 @@
 Name:                monad-control-aligned
-Version:             0.0.0
+Version:             0.0.1
 Synopsis:            Just like monad-control, except less efficient, and the monadic state terms are all * -> *
 License:             BSD3
 License-file:        LICENSE
@@ -29,12 +29,12 @@ source-repository head
 --------------------------------------------------------------------------------
 
 Library
-  Exposed-modules: Control.Monad.Trans.Control
+  Exposed-modules: Control.Monad.Trans.Control.Aligned
 
   Build-depends: base                 >= 4.5   && < 5
                , stm                  >= 2.3   && < 3
                , transformers         >= 0.2   && < 0.6
-               , transformers-compat  >= 0.3   && < 0.6
+               , transformers-compat  >= 0.3   && < 0.7
                , transformers-base    >= 0.4.4 && < 0.5
 
   Ghc-options: -Wall

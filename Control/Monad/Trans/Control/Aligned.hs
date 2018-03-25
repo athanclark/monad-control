@@ -26,7 +26,7 @@ Maintainer  :  Bas van Dijk <v.dijk.bas@gmail.com>
 Stability   :  experimental
 -}
 
-module Control.Monad.Trans.Control
+module Control.Monad.Trans.Control.Aligned
     ( -- * MonadTransControl
       MonadTransControl(..), Run
 
@@ -74,6 +74,7 @@ import qualified Control.Monad.ST.Safe      as Strict ( ST )
 
 -- from stm:
 import Control.Monad.STM ( STM )
+
 
 -- from transformers:
 import Control.Monad.Trans.Class    ( MonadTrans )
@@ -142,6 +143,7 @@ class MonadTrans t => MonadTransControl t stT | t -> stT where
 -- of @t@. This state can later be used to restore a @t@ computation using
 -- 'restoreT'.
 type Run t stT = forall n b. Monad n => t n b -> n (stT b)
+
 
 
 --------------------------------------------------------------------------------
