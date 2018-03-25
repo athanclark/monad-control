@@ -1,5 +1,4 @@
 dist
-<<<<<<< HEAD
 cabal-dev
 *.o
 *.hi
@@ -21,7 +20,3 @@ Dockerfile
 target/
 TAGS
 state/
-=======
---list-options
-.stack-work
->>>>>>> ec0c54ad6a18f04cbfb727dccb2085f0e03dc9dd
