@@ -255,13 +255,13 @@ instance Monoid w => MonadTransControl (Strict.WriterT w) ((,) w) where
     {-# INLINABLE restoreT #-}
 
 instance Monoid w => MonadTransControl (RWST r w s) ((,,) w s) where
-    liftWith f = RWST $ \r s -> (,s,mempty) <$> (f $ \t -> (\(a,s,w) -> (w,s,a)) <$> runRWST t r s)
+    liftWith f = RWST $ \r s -> (,s,mempty) <$> (f $ \t -> (\(a,s',w) -> (w,s',a)) <$> runRWST t r s)
     restoreT mSt = RWST $ \_ _ -> (\(w,s,a) -> (a,s,w)) <$> mSt
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}
 
 instance Monoid w => MonadTransControl (Strict.RWST r w s) ((,,) w s) where
-    liftWith f = Strict.RWST $ \r s -> (,s,mempty) <$> (f $ \t -> (\(a,s,w) -> (w,s,a)) <$> Strict.runRWST t r s)
+    liftWith f = Strict.RWST $ \r s -> (,s,mempty) <$> (f $ \t -> (\(a,s',w) -> (w,s',a)) <$> Strict.runRWST t r s)
     restoreT mSt = Strict.RWST $ \_ _ -> (\(w,s,a) -> (a,s,w)) <$> mSt
     {-# INLINABLE liftWith #-}
     {-# INLINABLE restoreT #-}

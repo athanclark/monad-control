@@ -1,5 +1,5 @@
 Name:                monad-control-aligned
-Version:             0.0.1
+Version:             0.0.1.1
 Synopsis:            Just like monad-control, except less efficient, and the monadic state terms are all * -> *
 License:             BSD3
 License-file:        LICENSE
