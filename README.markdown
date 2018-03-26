@@ -4,7 +4,7 @@ An alternative edition of monad-control that forces all state data types to:
 
 - be exposed at the `Constraint` level
 - be aligned s.t. the state is of kind `* -> *`, wherein the subject data type is indeed the monadic value `a` in `m a`;
-  this opposes the `StateT` and `WriterT` definitions, whos' state types are in the form of `(a, s)`; opposing curried
+  this opposes the `StateT` and `WriterT` definitions, whose state types are in the form of `(a, s)`; opposing curried
   type application indeed. Our edition enforces instances in the form of `(,) s` - thus leaving the last applied type polymorphic,
   achieving our goal of `* -> *` _aligned_ [tm] state type.
 
